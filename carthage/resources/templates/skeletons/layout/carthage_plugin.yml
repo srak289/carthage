@@ -1,0 +1,19 @@
+# Copyright (C) 2023, Hadron Industries, Inc.
+# Carthage is free software; you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License version 3
+# as published by the Free Software Foundation. It is distributed
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the file
+# LICENSE for details.
+name: ${args.name}
+${subrender('layout.py')}\
+<%def name='help()'>
+A general purpose carthage layout.
+</%def>\
+<%def name='arguments()'>
+<%
+parser.add_argument('--package', '-p',
+                    help='Which package should the layout live in.  If not specified, the layout lives in an anonymous package.',
+                    metavar='package')
+%>
+</%def>\
