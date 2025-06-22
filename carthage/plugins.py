@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 from .dependency_injection import *
 from .config import ConfigLayout
 from .files import checkout_git_repo
+from .utils import memoproperty
 
 
 logger = logging.getLogger('carthage.plugins')
@@ -157,22 +158,89 @@ class CarthagePlugin(Injectable):
     # plays.
     def resource_path(self, resource):
         return self._get_resource(resource)
+
 plugin_spec = Union[str, dict, Path]
 
-def _parse_plugin_spec(spec: plugin_spec):
-    if isinstance(spec, dict):
-        return spec
-    if hasattr(spec, '__fspath__'):
-        return dict(type='path', path=spec.resolve())
-    assert isinstance(spec, str)
-    if ':' in spec:
-        prefix = spec.partition(':')[0]
-        if prefix in ('https', 'git+ssh'):
-            return dict(type='git', url=spec)
-        raise NotImplementedError(f'unrecognized plugin specification: {spec}')
-    if '/' in spec or spec == '.' or spec == '..':
-        return dict(type='path', path=Path(spec).resolve())
-    return dict(type='module', name=spec)
+@inject(
+    injector=Injector,
+    plugin_mappings=PluginMappings
+)
+@dataclasses.dataclass
+class PluginSpec(Injectable):
+    """A pointer to a CarthagePlugin
+    """
+    spec: plugin_spec
+    orig_spec: plugin_spec = None
+    plugin_mappings: PluginMappings = None
+    injector: Injector = None
+    # TODO perhaps plugin is an @proeprty that resolves later
+    plugin: CarthagePlugin = None
+
+    def __post_init__(self):
+        self.spec = self._parse_plugin_spec(self.spec)
+        for s in ("type", "name", "path", "git", "url"):
+            if s in self.spec.keys():
+                setattr(self, s, self.spec[s])
+        if self.plugin_mappings:
+            self.orig_spec = self.spec
+            self.spec = self.plugin_mappings.map(self.spec)
+
+    def _parse_plugin_spec(self, spec: plugin_spec):
+        if isinstance(spec, dict):
+            return spec
+        if hasattr(spec, '__fspath__'):
+            return dict(type='path', path=spec.resolve())
+        assert isinstance(spec, str)
+        if ':' in spec:
+            prefix = spec.partition(':')[0]
+            if prefix in ('https', 'git+ssh'):
+                return dict(type='git', url=spec)
+            raise NotImplementedError(f'unrecognized plugin specification: {spec}')
+        if '/' in spec or spec == '.' or spec == '..':
+            return dict(type='path', path=Path(spec).resolve())
+        return dict(type='module', name=spec)
+
+    def load(self, ignore_import_errors=False) -> None:
+        if self.type == 'module':
+            module_name = self.name
+            module_spec = find_spec(module_name)
+            if not module_spec:
+                raise ValueError(f"no module found with name '{module_name}'")
+            handle_module_spec(module_spec=module_spec, injector=injector, ignore_import_errors=ignore_import_errors, metadata=None)
+
+        elif self.type == 'path':
+            handle_path_url(self.path, self.injector, ignore_import_errors=ignore_import_errors)
+
+        elif self.type == 'git':
+            path = handle_git_url(self.spec, self.injector)
+            handle_path_url(path, self.injector, ignore_import_errors=ignore_import_errors)
+
+        else:
+            raise ValueError(f'unrecognized plugin type in {spec}')
+
+    @classmethod
+    def key_for(cls, spec) -> InjectionKey:
+        pass
+
+    @memoproperty
+    def mapped(self) -> bool:
+        return self.spec != self.orig_spec
+
+    @memoproperty
+    def our_key(self) -> InjectionKey:
+        # TODO we might want to make the key from components of the URL
+        # e.g. determine a different property like module_name from the URL or the Path
+        # this way the keys might all match so if we load module from the local machine
+        # we don't reload it from git
+        kwargs = dict(type=self.spec["type"])
+        for s in ("name", "path", "git", "url"):
+            if s in self.spec.keys():
+                kwargs[s] = self.spec[s]
+        ret = InjectionKey(PluginSpec, **kwargs)
+        logger.info(f"Constructed key {ret}")
+        return ret
+
+
 
 @inject(injector=Injector)
 def load_plugin(spec: plugin_spec,
@@ -192,30 +260,15 @@ def load_plugin(spec: plugin_spec,
 
     :param ignore_import_errors:  If True, succeed and register the plugin even if the python code raises.  This is intended to allow the plugin to be loaded so its metadata can be examined to determine dependencies.  Obviously the plugin is unlikely to be functional in such a state.
     '''
-    spec = _parse_plugin_spec(spec)
-    orig_spec = spec
-    plugin_mappings = injector.get_instance(PluginMappings)
-    spec = plugin_mappings.map(spec)
-    if spec != orig_spec:
-        logger.debug('Mapped %s to %s', orig_spec, spec)
-    
+    spec = injector(PluginSpec, spec)
+    if spec.mapped:
+        logger.debug(f"{spec} was mapped")
 
-    if spec['type'] == 'module':
-        module_name = spec['name']
-        module_spec = find_spec(module_name)
-        if not module_spec:
-            raise ValueError(f"no module found with name '{module_name}'")
-        return handle_module_spec(module_spec=module_spec, injector=injector, ignore_import_errors=ignore_import_errors, metadata=None)
-
-    elif spec['type'] == 'path':
-        return handle_path_url(spec['path'], injector, ignore_import_errors=ignore_import_errors)
-
-    elif spec['type'] == 'git':
-        path = handle_git_url(spec, injector)
-        return handle_path_url(path, injector, ignore_import_errors=ignore_import_errors)
-
-    else:
-        raise ValueError(f'unrecognized plugin type in {spec}')
+    if injector._providers.get(spec.our_key):
+        logger.info(f"Already processed {spec}")
+        return
+    spec.load(ignore_import_errors)
+    injector.add_provider(spec.our_key, spec)
 
 def handle_path_url(spec: dict, injector, ignore_import_errors):
     path = Path(spec).resolve()
@@ -292,7 +345,7 @@ def handle_module_spec(injector, *, module_spec, metadata, ignore_import_errors,
                     ignore_import_errors=ignore_import_errors,
                     import_error=import_error, config_handled=True)
 
-def handle_git_url(spec, injector):
+def handle_git_url(spec, injector) -> Path:
     parsed = urlparse(spec['url'])
     config = injector(ConfigLayout)
     branch = spec.get('branch', None)
@@ -409,4 +462,4 @@ def _handle_plugin_config(injector, metadata, path, ignore_import_errors):
 def _setup_carthage_plugins_module():
     from types import ModuleType
     sys.modules['carthage.carthage_plugins'] = ModuleType('carthage.carthage_plugins')
-__all__ = ['load_plugin', 'load_plugin_from_spec']
+__all__ = ['load_plugin']
