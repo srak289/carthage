@@ -120,6 +120,7 @@ plugin_spec = Union[str, dict, Path]
 # turning this to asyncinjectable likely makes things break?
 @inject_autokwargs(
     injector=Injector,
+    ainjector=AsyncInjector,
     plugin_mappings=InjectionKey(PluginMappings, _optional=True),
 )
 class CarthagePlugin(AsyncInjectable):
@@ -129,7 +130,7 @@ class CarthagePlugin(AsyncInjectable):
     A CarthagePlugin that is not READY only holds data about its spec.
     """
 
-    spec: plugin_spec
+    spec: typing.Optional[plugin_spec] = None
     orig_spec: plugin_spec = None
     name: str = None # determined at module load time
     package: typing.Optional[importlib.resources.Package] = None # determined at module load
@@ -146,27 +147,44 @@ class CarthagePlugin(AsyncInjectable):
     # in that case I think carthage will handle the plugins
     # becoming ready in the correct order
 
-    def __init__(self, spec: plugin_spec, **kwargs):
+    def __init__(
+        self,
+        *,
+        spec: plugin_spec = None,
+        package: importlib.resources.Package = None,
+        metadata: dict = None,
+        **kwargs
+    ):
         super().__init__(**kwargs)
         # we need to modify carthageplugin to solve for an unknown name at
         # instantiation time
         # perhaps classmethod
         breakpoint()
-        self.name = name
-        self.package = package
-        self.plugin_mappings = plugin_mappings
-        self.injector = injector
+        if not spec and not package:
+            raise ValueError("CarthagePlugin requires 'spec' or 'package'")
+
+        self._resources = {}
+
+        if spec:
+            self.spec = spec
+        if metadata:
+            self.metadata = metadata
+        if package:
+            self.package = package
+            self._spec_from_package()
+
+        self._parse_plugin_spec()
+
         if 'resource_dir' in metadata:
             self.resource_dir = Path(metadata['resource_dir'])
         else:
             self.resource_dir = Path(package.__path__[0])
-        self._resources = {}
-        self.metadata = metadata
 
         self.spec = self._parse_plugin_spec(self.spec)
         for s in ("type", "name", "path", "git", "url"):
             if s in self.spec.keys():
                 setattr(self, s, self.spec[s])
+
         if self.plugin_mappings:
             self.orig_spec = self.spec
             self.spec = self.plugin_mappings.map(self.spec)
@@ -213,12 +231,16 @@ class CarthagePlugin(AsyncInjectable):
         return dict(type='module', name=spec)
 
     def depends_on(self):
+        """We need to mark ourself as dependent on other plugins?
+        """
         pass
 
     async def async_ready(self):
         pass
 
     def load(self, ignore_import_errors=False) -> None:
+        # do we actually need this or are we going to just
+        # bring  ourself to ready?
         if self.type == 'module':
             module_name = self.name
             module_spec = find_spec(module_name)
@@ -238,6 +260,7 @@ class CarthagePlugin(AsyncInjectable):
 
     @classmethod
     def key_for(cls, spec) -> InjectionKey:
+        # we might not need this if we short-circuit and return at instance-time
         pass
 
     @memoproperty
@@ -252,9 +275,9 @@ class CarthagePlugin(AsyncInjectable):
         if 'config' in metadata:
             config.load_yaml(yaml.dump(metadata['config']), path=path, ignore_import_errors=ignore_import_errors)
 
-
     @memoproperty
     def our_key(self) -> InjectionKey:
+        # we may not need this?
         # TODO we might want to make the key from components of the URL
         # e.g. determine a different property like module_name from the URL or the Path
         # this way the keys might all match so if we load module from the local machine
@@ -266,7 +289,6 @@ class CarthagePlugin(AsyncInjectable):
         ret = InjectionKey(PluginSpec, **kwargs)
         logger.info(f"Constructed key {ret}")
         return ret
-
 
     def handle_path_url(self, spec: dict, ignore_import_errors):
         path = Path(spec).resolve()
@@ -300,7 +322,8 @@ class CarthagePlugin(AsyncInjectable):
             name = metadata['name']
             if '.' not in name:
                 name = "carthage.carthage_plugins." + name
-                self._setup_carthage_plugins_module()
+                from types import ModuleType
+                sys.modules['carthage.carthage_plugins'] = ModuleType('carthage.carthage_plugins')
             if package_path.exists():
                 module_spec = spec_from_file_location(
                     name, location=package_path,
@@ -315,10 +338,6 @@ class CarthagePlugin(AsyncInjectable):
             ignore_import_errors=ignore_import_errors,
             config_handled=True
         )
-
-    def _setup_carthage_plugins_module():
-        from types import ModuleType
-        sys.modules['carthage.carthage_plugins'] = ModuleType('carthage.carthage_plugins')
 
     def handle_module_spec(self, *, module_spec, metadata, ignore_import_errors, config_handled=False):
         package = None
@@ -401,11 +420,14 @@ class CarthagePlugin(AsyncInjectable):
     ):
         if (not metadata) and (not package):
             raise RuntimeError('Either package or metadata must be supplied')
+
         if metadata:
             if 'resource_dir' in metadata:
                 metadata_path = Path(metadata['resource_dir']) / "carthage_plugin.yml"
             else:
+                # FIXME assumes package was provided if 'resource_dir' not in metadata
                 metadata_path = Path(package.__file__)
+
         if not metadata:
             if not package.__spec__.origin:
                 raise SyntaxError(f'{package.__name__} is not a Carthage plugin')
@@ -432,10 +454,11 @@ class CarthagePlugin(AsyncInjectable):
                 name = metadata['name']
         else:
             name = package.__name__
-        try:
-            injector.get_instance(InjectionKey(CarthagePlugin, name=name))
-            return # already loaded
-        except KeyError: pass
+
+        # return if plugin already loaded
+        if injector._providers.get(InjectionKey(CarthagePlugin, name=name)):
+            return
+
         if not config_handled:
             # we need to make the plugin spec ready before we get here ?
             # self needs to be provided unless we m

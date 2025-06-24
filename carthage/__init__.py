@@ -124,7 +124,7 @@ base_injector(carthage.cloud_init.enable_cloud_init_plugins)
 
 __all__ += ['base_injector']
 
-base_injector(CarthagePlugin.load_plugin_from_package, sys.modules[__name__])
+base_injector(CarthagePlugin, package=sys.modules[__name__])
 
 # Things that need to import after base_injector is defined
 from . import deployment_commands
