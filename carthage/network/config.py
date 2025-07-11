@@ -144,7 +144,8 @@ class V4Config(L3ConfigMixin):
     #: Takes a lower bound and a upper bound, both specified as V4 addresses.  If specified and address is None, will assign the address between the lower and upper bound.  This allows addresses to be dynamically managed at modeling time rather than by DHCP at run time.  DHCP can still be used, but at least for models whose config includes *pool*, addresses will be statically configured in the dhcp server.
     pool: tuple = dataclasses.field(default=None, repr=False)
     public_address: IPv4Address = dataclasses.field(default=None, repr=False)
-    metric: int = None
+    metric: int = None #deprecate ?
+    routes: tuple[IPv4Network] = None
     
     _attributes = L3ConfigMixin._attributes | {'masquerade', 'pool'}
 
@@ -162,6 +163,7 @@ class V4Config(L3ConfigMixin):
                 secondary_addresses=self._handle_secondary_addresses(IPv4Address),
                 pool = self._handle_pool(IPv4Address),
                 public_address=ipv4_gateway,
+                routes=lambda x: tuple(map(IPv4Network, x))
         ).items():
             val = getattr(self, k)
             if val is not None:
