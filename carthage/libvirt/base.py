@@ -90,6 +90,10 @@ class Vm(Machine, SetupTaskMixin):
         if not hasattr(self, 'should_define'):
             self.should_define = self.libvirt_config.should_define
         self.mob = None
+        self.host = host
+        self.libvirt_config = self.config_layout.libvirt
+        if not hasattr(self, 'should_define'):
+            self.should_define = self.libvirt_config.should_define
 
     @memoproperty
     def uuid(self):
@@ -245,11 +249,17 @@ class Vm(Machine, SetupTaskMixin):
                     self.running = False
                 except Exception:
                     pass
-            # FIXME this is async code that needs to be synchronized
-            self.host.machine.run_command("rm", "-f", str(self.config_path))
-            self.host.machine.run_command("rm", "-f", str(self.console_json_path))
         if self.libvirt_config.delete_volumes:
             self.host.machine.run_command("rm", "-f", str(self.volume.path))
+            try:
+                os.unlink(self.config_path)
+            except FileNotFoundError:
+                pass
+        if self.libvirt_config.delete_volumes:
+            try:
+                shutil.rmtree(self.stamp_path)
+            except FileNotFoundError:
+                pass
         if self.volume:
             self.volume.close()
         self.injector.close(canceled_futures=canceled_futures)
