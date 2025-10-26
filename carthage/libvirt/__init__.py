@@ -48,6 +48,10 @@ class LibvirtSchema(ConfigSchema, prefix='libvirt'):
     # defaults to False
     delete_volumes: bool = False
 
+    #: Whether we delete the volumes on close
+    # defaults to False
+    delete_volumes: bool = False
+
     #: Default vm memory in MB
     # defaults to 2G
     # may be overridden on models
