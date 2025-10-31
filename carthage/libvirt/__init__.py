@@ -6,11 +6,14 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the file
 # LICENSE for details.
 
-def noop(*args):
+try:
+    def noop(*args):
+        pass
+    import libvirt
+    libvirt.registerErrorHandler(noop, None)
+    # stop libvirt printing to stderr even when exceptions are caught
+except ImportError:
     pass
-import libvirt
-libvirt.registerErrorHandler(noop, None)
-# stop libvirt printing to stderr even when exceptions are caught
 
 from carthage import deployment
 from carthage.config import ConfigSchema, ConfigLayout, ConfigPath
