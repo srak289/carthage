@@ -130,6 +130,12 @@ class SecondaryAddress:
     public: _address = None
     del _address
     
+@dataclasses.dataclass()
+class V4Route:
+    destination: IPv4Network
+    metric: int = None
+    scope: str = "global"
+    table: int|str = "default"
 
 @dataclasses.dataclass()
 class V4Config(L3ConfigMixin):
