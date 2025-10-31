@@ -6,8 +6,14 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the file
 # LICENSE for details.
 
+def noop(*args):
+    pass
+import libvirt
+libvirt.registerErrorHandler(noop, None)
+# stop libvirt printing to stderr even when exceptions are caught
+
 from carthage import deployment
-from carthage.config import ConfigSchema, ConfigLayout
+from carthage.config import ConfigSchema, ConfigLayout, ConfigPath
 from carthage.dependency_injection import inject, Injector
 
 from .base import *
@@ -32,11 +38,15 @@ class LibvirtSchema(ConfigSchema, prefix='libvirt'):
     #: Default disk size in mebibytes
     # defaults to 10GiB
     # may be overridden on models
-    image_size_mib: int = 10485760
+    image_size_mb: int = 10485760
 
     #: Default image location
     # defaults to a place libvirt can access
-    image_dir: str = "/srv/carthage/libvirt"
+    image_dir: ConfigPath = "{base_dir}/libvirt"
+
+    #: Whether we delete the volumes on close
+    # defaults to False
+    delete_volumes: bool = False
 
     #: Default vm memory in MB
     # defaults to 2G

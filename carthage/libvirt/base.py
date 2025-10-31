@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import os.path
+import pathlib
 import shutil
 import types
 import uuid
@@ -58,7 +59,7 @@ class VirtiofsMount(Injectable):
 
 @inject_autokwargs(
     injector=Injector,
-    host=libvirt_host_key,
+    host=InjectionKey(libvirt_host_key, _ready=True),
     image=InjectionKey(vm_image_key, _defer=True),
     network_config=carthage.network.NetworkConfig
 )
@@ -85,7 +86,10 @@ class Vm(Machine, SetupTaskMixin):
         self.volume = None
         self.vm_running = self.machine_running
         self._operation_lock = asyncio.Lock()
-        self.host = host
+        self.libvirt_config = self.config_layout.libvirt
+        if not hasattr(self, 'should_define'):
+            self.should_define = self.libvirt_config.should_define
+        self.mob = None
 
     @memoproperty
     def uuid(self):
@@ -111,6 +115,9 @@ class Vm(Machine, SetupTaskMixin):
         os.makedirs(self.stamp_path, exist_ok=True)
 
     async def find(self):
+        if not self.mob:
+            # TODO
+            self.mob = self.connection.async_find_by_uuid(self.uuid)
         await self.gen_volume()
         if self.domid():
             await self.is_machine_running()
@@ -120,6 +127,11 @@ class Vm(Machine, SetupTaskMixin):
         return False
 
     async def find_or_create(self):
+        breakpoint()
+        """Find this Vm or create it
+        If :attr:`should_define` is true :meth:`do_define` will be called
+        before :meth:`do_create`
+        """
         if await self.find():
             return
         await self.start_machine()
@@ -130,6 +142,7 @@ class Vm(Machine, SetupTaskMixin):
         await self.resolve_networking()
         for i, link in self.network_links.items():
             await link.instantiate(carthage.network.BridgeNetwork)
+        # we have to get the volume to the destination
         await self.gen_volume()
         layout = await self.ainjector.get_instance_async(InjectionKey(CarthageLayout, _ready=False, _optional=True))
         if layout:
@@ -151,6 +164,7 @@ class Vm(Machine, SetupTaskMixin):
         console_needed = self.console_needed
         if console_needed is None:
             console_needed = getattr(self.model, 'console_needed', False)
+        pathlib.Path(self.config_path).parent.mkdir(exist_ok=True)
         with open(self.config_path, 'wt') as f:
             f.write(template.render(
                 console_needed=console_needed,
@@ -172,11 +186,11 @@ class Vm(Machine, SetupTaskMixin):
 
     @memoproperty
     def config_path(self):
-        return os.path.join(self.config_layout.vm_image_dir, self.name + '.xml')
+        return os.path.join(self.libvirt_config.image_dir, self.name + '.xml')
 
     @memoproperty
     def console_json_path(self):
-        return os.path.join(self.config_layout.vm_image_dir, self.name + '.console')
+        return os.path.join(self.libvirt_config.image_dir, self.name + '.console')
 
     async def start_vm(self):
         async with self._operation_lock:
@@ -185,9 +199,9 @@ class Vm(Machine, SetupTaskMixin):
             await self.start_dependencies()
             await super().start_machine()
             await self.write_config()
-            await sh.virsh('create',
-                           self.config_path,
-                           _bg=True, _bg_exc=False)
+            if self.should_define:
+                await self.host.async_define_vm(self)
+            await self.host.async_create_vm(self)
             if self.__class__.ip_address is Machine.ip_address:
                 try:
                     self.ip_address
@@ -195,38 +209,27 @@ class Vm(Machine, SetupTaskMixin):
                     try:
                         await self._find_ip_address()
                     except Exception as e:
-                        sh.virsh("destroy", self.full_name,
-                                 _bg=True, _bg_exc=False)
+                        await self.host.async_destroy_vm(self)
                         raise e from None
             self.running = True
 
     start_machine = start_vm
 
     def domid(self):
-        try:
-            bdomid =sh.virsh('domid', self.full_name, _bg=False).stdout
-            domid = str(bdomid, 'utf-8').strip()
-        except sh.ErrorReturnCode_1:
-            return None
-        return domid
+        return self.host.get_domid(self.full_name)
 
     async def stop_vm(self):
         async with self._operation_lock:
             if not self.running:
                 return
 
-            await sh.virsh("shutdown", self.full_name,
-                           _bg=True,
-                           _bg_exc=False)
+            await self.host.async_shutdown_vm(self)
             for i in range(10):
                 await asyncio.sleep(5)
                 if not await self.is_machine_running(find_ip_address=False):
                     break
             if self.running:
-                try:
-                    sh.virsh('destroy', self.full_name, _bg=False)
-                except sh.ErrorReturnCode:
-                    pass
+                await self.host.async_destroy_vm(self)
                 self.running = False
             await super().stop_machine()
 
@@ -235,22 +238,18 @@ class Vm(Machine, SetupTaskMixin):
     def close(self, canceled_futures=None):
         if self.closed:
             return
-        if (not self.config_layout.persist_local_networking) or self.config_layout.delete_volumes:
+        if (not self.config_layout.persist_local_networking) or self.libvirt_config.delete_volumes:
             if self.running:
                 try:
-                    sh.virsh("destroy", self.full_name, _bg=False)
+                    self.host.destroy_vm(self)
                     self.running = False
                 except Exception:
                     pass
-            try:
-                os.unlink(self.config_path)
-            except FileNotFoundError:
-                pass
-        if self.config_layout.delete_volumes:
-            try:
-                shutil.rmtree(self.stamp_path)
-            except FileNotFoundError:
-                pass
+            # FIXME this is async code that needs to be synchronized
+            self.host.machine.run_command("rm", "-f", str(self.config_path))
+            self.host.machine.run_command("rm", "-f", str(self.console_json_path))
+        if self.libvirt_config.delete_volumes:
+            self.host.machine.run_command("rm", "-f", str(self.volume.path))
         if self.volume:
             self.volume.close()
         self.injector.close(canceled_futures=canceled_futures)
@@ -291,22 +290,13 @@ class Vm(Machine, SetupTaskMixin):
 
     async def _find_ip_address(self):
         for i in range(30):
-            try:
-                res = sh.virsh("qemu-agent-command",
-                                     self.full_name,
-                                     '{"execute":"guest-network-get-interfaces"}',
-                                     _bg=True, _bg_exc=False, _timeout=5)
-                await res
-            except sh.TimeoutException:
+            res = await self.host.async_qemu_agent_command(self, '{"execute":"guest-network-get-interfaces"}', timeout=5)
+            if res is None:
+                logger.info(f"Timed out waiting for qemu-agent-command for {self}")
                 await asyncio.sleep(3)
-            except sh.ErrorReturnCode_1 as e:
-                # We should retry in a bit if the message contains 'not connected' and fail for other errors
-                if b'connected' not in e.stderr:
-                    raise
-                await asyncio.sleep(5)
                 continue
             try:
-                js_res = json.loads(res.stdout)
+                js_res = json.loads(res)
             except json.JSONDecodeError:
                 # Occasionally the qemu agent returns empty or invalid JSON briefly after starting a VM
                 await asyncio.sleep(3)
@@ -436,7 +426,7 @@ async def qemu_disk_config(vm, ci_data, *, ainjector):
                 if 'volume' not in entry:
                     entry['volume'] = vm.volume
                 if 'size' not in entry:
-                    entry['size'] = vm.config_layout.vm_image_size
+                    entry['size'] = vm.libvirt_config.image_size
             if 'cache' not in entry:
                 try:
                     entry['cache'] = vm.model.disk_cache
@@ -447,6 +437,7 @@ async def qemu_disk_config(vm, ci_data, *, ainjector):
                     ImageVolume, name=vm.name + f'_disk_{i}',
                     size=entry['size'],
                     )
+                breakpoint()
             if 'volume' in entry and isinstance(entry['volume'], InjectionKey):
                 entry['volume'] = await vm.ainjector.get_instance_async(entry['volume'])
             elif 'volume' in entry:

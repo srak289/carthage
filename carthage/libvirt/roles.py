@@ -9,13 +9,15 @@
 import logging
 logger = logging.getLogger("carthage.libvirt.roles")
 
-from carthage.dependency_injection import dependency_quote
-from carthage.machine import BareMetalMachine, MachineCustomization
+from carthage.dependency_injection import *
+from carthage.debian import install_stage1_packages_task, DebianContainerImage
+from carthage.image import SshAuthorizedKeyCustomizations
+from carthage.machine import customization_task, BareMetalMachine, MachineCustomization
 from carthage.modeling import *
 from carthage.setup_tasks import setup_task
 from carthage.systemd import SystemdNetworkModelMixin
 
-from .base import vm_image_key, Vm
+from .base import vm_image_key, Vm, InstallQemuAgent
 
 
 __all__ = []
@@ -41,7 +43,36 @@ class LibvirtHostRole(MachineModel, template=True):
                 fp.write_text("options kvm_intel nested=y\n")
 __all__ += ["LibvirtHostRole"]
 
+class BaseDebianImage(DebianContainerImage):
+    ssh_authorization = customization_task(SshAuthorizedKeyCustomizations)
+    install_qemu_agent = customization_task(InstallQemuAgent)
+    install_packages = install_stage1_packages_task(["neovim", "emacs-nox", "git", "tmux", "iproute2", "rsync", "zstd"])
+
+    @setup_task("Use systemd-resolved for name service")
+    def use_systemd_resolved(self):
+        root = Path(self.path)
+        if not root.joinpath("usr/bin/resolvectl").exists():
+            self.container_command('apt', '-y', 'install', 'systemd-resolved')
+        try:
+            root.joinpath("etc/resolv.conf").unlink()
+        except FileNotFoundError:
+            pass
+        shutil.copy(root/"usr/lib/systemd/resolv.conf", root/"etc")
+
+# copied from carthage_base
+@provides(vm_image_key)
+@inject(ainjector = AsyncInjector,
+        image = BaseDebianImage)
+async def debian_vm_image(ainjector, image):
+    return await ainjector(
+        debian_container_to_vm,
+        image, f"{image.name}.raw",
+        "10G",
+        classes = "+SERIAL,CLOUD_INIT,GROW,OPENROOT")
+
 class BaseLinuxVm(MachineModel, SystemdNetworkModelMixin, template=True):
+    add_provider(BaseDebianImage)
+    add_provider(vm_image_key, debian_vm_image)
     add_provider(machine_implementation_key, dependency_quote(Vm))
     nested_virt = False
 
@@ -58,7 +89,7 @@ class SmallLinuxVm(BaseLinuxVm, template=True):
 __all__ += ["SmallLinuxVm"]
 
 class MediumLinuxVm(BaseLinuxVm, template=True):
-    cpus = 2
+    cpus = 4
     memory_mb = 8*1024
     disk_sizes = (32,)
 __all__ += ["MediumLinuxVm"]
