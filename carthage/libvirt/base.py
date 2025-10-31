@@ -90,7 +90,6 @@ class Vm(Machine, SetupTaskMixin):
         if not hasattr(self, 'should_define'):
             self.should_define = self.libvirt_config.should_define
         self.mob = None
-        self.host = host
         self.libvirt_config = self.config_layout.libvirt
         if not hasattr(self, 'should_define'):
             self.should_define = self.libvirt_config.should_define
