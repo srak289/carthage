@@ -256,10 +256,7 @@ class Vm(Machine, SetupTaskMixin):
             except FileNotFoundError:
                 pass
         if self.libvirt_config.delete_volumes:
-            try:
-                shutil.rmtree(self.stamp_path)
-            except FileNotFoundError:
-                pass
+            self.host.machine.run_command("rm", "-f", str(self.volume.path))
         if self.volume:
             self.volume.close()
         self.injector.close(canceled_futures=canceled_futures)

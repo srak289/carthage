@@ -26,35 +26,41 @@ from .base import libvirt_host_key
 
 __all__ = []
 
-class AsyncMethodProxyMixin:
-    """Function calls to the libvirt module are synchronous by nature
-    We use AsyncMethodProxy to return wrappers for run_in_executor by accessing
-    any of the methods of this class with the `async_` prefix
-    """
-    def __getattr__(self, k):
-        prefix = "async_"
-        if not k.startswith(prefix):
-            raise AttributeError(f"{self} has no attribute '{k}'") from None
-        fname = k[len(prefix):]
+class AsyncMethodDescriptor:
+    def __init__(self, target):
+        self.target = target
+        self.wrap = None
+        self.name = f"_async_{target}"
+
+    def __get__(self, obj, objtype=None):
+        # accessed via class
+        if obj is None:
+            return self
+
         try:
-            f = object.__getattribute__(self, fname)
+            f = getattr(obj, self.name)
+            return f
         except AttributeError:
-            raise AttributeError(f"{self} has no attribute '{k}'") from None
+            pass
 
-        if not callable(f):
-            raise AttributeError(f"{f} is not callable on {type(self)}")
-
-        @functools.wraps(f)
+        @functools.wraps(self.target)
         async def wrap(*args, **kwargs):
-            loop = asyncio.get_running_loop()
-            part = functools.partial(f, *args, **kwargs)
-            return await loop.run_in_executor(None, part)
+            return await asyncio.to_thread(getattr(obj, self.target), *args, **kwargs)
 
-        object.__setattr__(self, k, wrap)
-
+        # cache the wrapper
+        setattr(obj, self.name, wrap)
         return wrap
 
-class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
+class AsyncMethodProxyMixin:
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for k, v in list(vars(cls).items()):
+            if callable(v) and not k.startswith("__"):
+                fname = f"async_{k}"
+                if not hasattr(cls, fname):
+                    setattr(cls, fname, AsyncMethodDescriptor(k))
+
+class LibvirtHost(AsyncInjectable, AsyncMethodProxyMixin, MachineModel, template=True):
     """A libvirt host
     """
 
@@ -189,7 +195,7 @@ class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
         super().close()
 
     async def async_ready(self):
-        # await self.async_connect() #> this  blocks generate time
+        await self.async_connect()
         return await super().async_ready()
 __all__ += ["LibvirtHost"]
 
@@ -226,8 +232,7 @@ class RemoteLibvirtHost(LibvirtHost, template=True):
                 else:
                     logger.info(f"Not copying {src}: {dst} exists")
         breakpoint()
-        # how to get the wrapper to register on super with descriptors?
-        return await super().create_vm(vm)
+        return await super().async_create_vm(vm)
 
     def destroy_vm(self, vm):
         # vm.mob.destroy()
