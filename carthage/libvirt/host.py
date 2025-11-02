@@ -60,7 +60,7 @@ class AsyncMethodProxyMixin:
                 if not hasattr(cls, fname):
                     setattr(cls, fname, AsyncMethodDescriptor(k))
 
-class LibvirtHost(AsyncInjectable, AsyncMethodProxyMixin, MachineModel, template=True):
+class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
     """A libvirt host
     """
 

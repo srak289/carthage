@@ -8,10 +8,12 @@
 
 import logging
 logger = logging.getLogger("carthage.libvirt.roles")
+import pathlib
+import shutil
 
 from carthage.dependency_injection import *
-from carthage.debian import install_stage1_packages_task, DebianContainerImage
-from carthage.image import SshAuthorizedKeyCustomizations
+from carthage.debian import debian_container_to_vm, install_stage1_packages_task, DebianContainerImage
+from carthage.image import wrap_container_customization, SshAuthorizedKeyCustomizations
 from carthage.machine import customization_task, BareMetalMachine, MachineCustomization
 from carthage.modeling import *
 from carthage.setup_tasks import setup_task
@@ -46,11 +48,11 @@ __all__ += ["LibvirtHostRole"]
 class BaseDebianImage(DebianContainerImage):
     ssh_authorization = customization_task(SshAuthorizedKeyCustomizations)
     install_qemu_agent = customization_task(InstallQemuAgent)
-    install_packages = install_stage1_packages_task(["neovim", "emacs-nox", "git", "tmux", "iproute2", "rsync", "zstd"])
+    install_packages = wrap_container_customization(install_stage1_packages_task(["neovim", "emacs-nox", "git", "tmux", "iproute2", "rsync", "zstd"]))
 
     @setup_task("Use systemd-resolved for name service")
     def use_systemd_resolved(self):
-        root = Path(self.path)
+        root = pathlib.Path(self.path)
         if not root.joinpath("usr/bin/resolvectl").exists():
             self.container_command('apt', '-y', 'install', 'systemd-resolved')
         try:
