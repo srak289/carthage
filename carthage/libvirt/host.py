@@ -214,7 +214,7 @@ class RemoteLibvirtHost(LibvirtHost, template=True):
     @memoproperty
     def connection_string(self):
         # for now we only consider ssh, not sshfs sockets or tls
-        return f"{self.hypervisor_backend}+ssh://{self.ip_address}/system"
+        return f"{self.hypervisor_backend}+ssh://{self.ip_address}/system?no_verify=1&no_tty=1"
 
     async def async_create_vm(self, vm):
         # handle transfer of vm artifacts
