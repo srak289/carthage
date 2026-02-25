@@ -66,7 +66,7 @@ class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.connection = None
+        self._connection = None
         self.readonly = False
         self.hypervisor_backend = "qemu"
 
@@ -86,7 +86,7 @@ class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
             logger.info(f"Connecting privileged to {self}")
         try:
             # need run_in_exec
-            self.connection = connect_func(name=self.connection_string)
+            self._connection = connect_func(name=self.connection_string)
         except libvirt.libvirtError:
             logger.error(f"Failed to connect to {self.connection_string}")
             raise
@@ -96,6 +96,12 @@ class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
         """Override this method to provide the connection string for this host.
         """
         raise NotImplementedError
+
+    @property
+    def connection(self):
+        if not self._connection:
+            self.connect()
+        return self._connection
 
     @property
     def connected(self):
@@ -186,17 +192,18 @@ class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
         vm.mob.destroy()
 
     def disconnect(self):
-        if self.connection:
-            self.connection.close()
-        self.connection = None
+        if self._connection:
+            self._connection.close()
+        self._connection = None
 
     def close(self):
         self.disconnect()
         super().close()
 
     async def async_ready(self):
-        await self.async_connect()
+        # await self.async_connect()
         return await super().async_ready()
+
 __all__ += ["LibvirtHost"]
 
 # maybe we inspect the model for networks and we just define all the bridges
@@ -216,8 +223,11 @@ class RemoteLibvirtHost(LibvirtHost, template=True):
         # for now we only consider ssh, not sshfs sockets or tls
         return f"{self.hypervisor_backend}+ssh://{self.ip_address}/system?no_verify=1&no_tty=1"
 
+    @inject(_=InjectionKey(Machine, _ready=True))
     async def async_create_vm(self, vm):
+        await self.ainjector.get_instance_async(Machine)
         # handle transfer of vm artifacts
+        breakpoint()
         async with self.machine.filesystem_access() as fs:
             # strip the leading slash for pathlib
             for src, dst in (
