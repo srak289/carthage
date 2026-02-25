@@ -17,12 +17,9 @@ import os.path
 
 from carthage.dependency_injection import *
 from carthage.machine import Machine
-from carthage.modeling.base import MachineModel
 from carthage.setup_tasks import *
 from carthage.utils import memoproperty, when_needed
 from carthage import sh
-
-from .base import libvirt_host_key
 
 __all__ = []
 
@@ -60,7 +57,7 @@ class AsyncMethodProxyMixin:
                 if not hasattr(cls, fname):
                     setattr(cls, fname, AsyncMethodDescriptor(k))
 
-class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
+class LibvirtHost(Machine, AsyncMethodProxyMixin, SetupTaskMixin):
     """A libvirt host
     """
 
@@ -70,11 +67,9 @@ class LibvirtHost(AsyncMethodProxyMixin, MachineModel, template=True):
         self.readonly = False
         self.hypervisor_backend = "qemu"
 
-    self_provider(libvirt_host_key)
-
     @classmethod
     def supplementary_injection_keys(cls, k):
-        yield InjectionKey(libvirt_host_key, host=cls.name, _globally_unique=True)
+        yield InjectionKey(LibvirtHost, host=cls.model.name, _globally_unique=True)
         yield from super().supplementary_injection_keys(k)
 
     def connect(self):
@@ -209,13 +204,13 @@ __all__ += ["LibvirtHost"]
 # maybe we inspect the model for networks and we just define all the bridges
 # so someone with the UI can see them
 
-class RemoteLibvirtHost(LibvirtHost, template=True):
+class RemoteLibvirtHost(LibvirtHost):
     """A remote libvirt host
     """
 
     @classmethod
     def supplementary_injection_keys(cls, k):
-        yield InjectionKey(RemoteLibvirtHost, host=cls.name, _globally_unique=True)
+        yield InjectionKey(RemoteLibvirtHost, host=cls.model.name, _globally_unique=True)
         yield from super().supplementary_injection_keys(k)
 
     @memoproperty
@@ -251,13 +246,13 @@ class RemoteLibvirtHost(LibvirtHost, template=True):
 
 __all__ += ["RemoteLibvirtHost"]
 
-class LocalLibvirtHost(LibvirtHost, template=True):
+class LocalLibvirtHost(LibvirtHost):
     """A local libvirt host, where Carthage is running
     """
 
     @classmethod
     def supplementary_injection_keys(cls, k):
-        yield InjectionKey(LocalLibvirtHost, host=cls.name, _globally_unique=True)
+        yield InjectionKey(LocalLibvirtHost, host=cls.model.name, _globally_unique=True)
         yield from super().supplementary_injection_keys(k)
 
     @memoproperty

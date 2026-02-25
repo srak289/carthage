@@ -33,6 +33,7 @@ from carthage.utils import when_needed, memoproperty
 _resources_path = os.path.join(os.path.dirname(__file__), "resources")
 _templates = mako.lookup.TemplateLookup([_resources_path + '/templates'])
 
+from .host import LibvirtHost
 
 vm_image_key = InjectionKey('vm-image')
 libvirt_host_key = InjectionKey('libvirt-host')
@@ -59,7 +60,7 @@ class VirtiofsMount(Injectable):
 
 @inject_autokwargs(
     injector=Injector,
-    host=InjectionKey(libvirt_host_key, _ready=True),
+    host=InjectionKey(LibvirtHost, _ready=True),
     image=InjectionKey(vm_image_key, _defer=True),
     network_config=carthage.network.NetworkConfig
 )
